@@ -17,6 +17,12 @@ on:
   schedule:
     - cron: "17 4 * * 1"   # weekly: keeps main's Nix cache from expiring (7 days unused)
 
+# A merged pull request's "closed" run has the base branch as its ref: group
+# pull request runs by number, or it cancels main's push run.
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   build:
     if: github.event.action != 'closed'
