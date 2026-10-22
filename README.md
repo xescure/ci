@@ -116,3 +116,21 @@ quirk. A project needing more than two such quirks writes its own job.
 
 This repository's flake is the self-test (`self-test.yml`): its checks exercise
 the inputs, and its fixture image is pushed to `ghcr.io/xescure/ci-fixture`.
+
+## Renovate preset (`default.json`)
+
+Projects extend it with a `renovate.json` of one line (the hosted Renovate app
+must be installed on this repository too, to read it):
+
+```json
+{ "extends": ["local>xescure/ci"] }
+```
+
+- Weekly (Monday before 6am UTC), one grouped PR per ecosystem: Rust, npm,
+  GitHub Actions, Nix flake inputs, plus lock file maintenance.
+- npm and crates releases wait 3 days before they are proposed; security fixes
+  come at any time.
+- Green minor, patch, digest and lock file updates merge themselves (main
+  deploys to test; prod still needs a `v*` tag). Majors, and anything below
+  1.0, wait for review.
+- The `xescure/ci` pin follows main by digest: its own PR as soon as main moves.
