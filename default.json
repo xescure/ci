@@ -1,0 +1,93 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "description": "xescure's shared Renovate preset. Projects extend it with local>xescure/ci.",
+  "extends": [
+    "config:recommended",
+    "helpers:pinGitHubActionDigests"
+  ],
+  "dependencyDashboard": true,
+  "osvVulnerabilityAlerts": true,
+  "schedule": [
+    "before 6am on monday"
+  ],
+  "lockFileMaintenance": {
+    "enabled": true,
+    "schedule": [
+      "before 6am on monday"
+    ]
+  },
+  "nix": {
+    "enabled": true
+  },
+  "vulnerabilityAlerts": {
+    "schedule": [
+      "at any time"
+    ],
+    "minimumReleaseAge": null
+  },
+  "packageRules": [
+    {
+      "description": "Registry releases wait 3 days: most malicious releases are found and pulled within that.",
+      "matchDatasources": [
+        "npm",
+        "crate"
+      ],
+      "minimumReleaseAge": "3 days"
+    },
+    {
+      "description": "Any Cargo.lock change rebuilds every Rust dependency: one weekly PR.",
+      "matchManagers": [
+        "cargo"
+      ],
+      "groupName": "Rust dependencies"
+    },
+    {
+      "description": "One weekly PR for npm.",
+      "matchManagers": [
+        "npm"
+      ],
+      "groupName": "npm dependencies"
+    },
+    {
+      "description": "One weekly PR for GitHub Actions.",
+      "matchManagers": [
+        "github-actions"
+      ],
+      "groupName": "GitHub Actions"
+    },
+    {
+      "description": "One weekly PR for Nix flake inputs.",
+      "matchManagers": [
+        "nix"
+      ],
+      "groupName": "Nix flake inputs"
+    },
+    {
+      "description": "Green non-major updates merge themselves (main deploys to test; prod still needs a v* tag).",
+      "matchUpdateTypes": [
+        "minor",
+        "patch",
+        "pin",
+        "digest",
+        "lockFileMaintenance"
+      ],
+      "automerge": true
+    },
+    {
+      "description": "Below 1.0 any release may break (the Keeta SDKs are 0.x): those wait for review.",
+      "matchCurrentVersion": "/^[~^=v]*0\\./",
+      "automerge": false
+    },
+    {
+      "description": "xescure/ci (pinned by commit, following main): its own PR as soon as main moves.",
+      "matchPackageNames": [
+        "xescure/ci"
+      ],
+      "groupName": null,
+      "schedule": [
+        "at any time"
+      ],
+      "automerge": true
+    }
+  ]
+}
