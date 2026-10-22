@@ -1,5 +1,5 @@
 # Builds a flake's checks and OCI images in one job, on one restored Nix store,
-# so the images reuse every derivation the checks built.
+# so the images reuse every derivation the checks built, then pushes the images.
 name: nix-image
 
 on:
@@ -10,7 +10,7 @@ on:
         type: string
         default: ""
       images:
-        description: Flake attributes of the OCI images to build, separated by spaces or newlines.
+        description: Flake attributes of the nix2container images to build and push, separated by spaces or newlines.
         type: string
         default: image
       lockfiles:
@@ -25,14 +25,29 @@ on:
         description: Lift Ubuntu's AppArmor restriction on unprivileged user namespaces, for checks that run bwrap.
         type: boolean
         default: false
+      push:
+        description: Push the images (main as sha-<commit> and main, a pull request from this repository as pr-<n> and pr-<n>-<head>).
+        type: boolean
+        default: true
+    outputs:
+      images:
+        description: 'The pushed images as a JSON object, flake attribute to name@digest ({} when nothing was pushed).'
+        value: ${{ jobs.build.outputs.images }}
 
 jobs:
   build:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      packages: write
+    outputs:
+      images: ${{ steps.push.outputs.images || '{}' }}
     steps:
+      # The job's token can write packages: keep it out of .git/config, where
+      # every later step (npm test code included) could read it.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       # bwrap opens a user namespace inside the build sandbox, which Ubuntu's
       # AppArmor policy refuses ("setting up uid map: Permission denied").
@@ -49,10 +64,13 @@ jobs:
           # shellcheck disable=SC2086 # LOCKFILES is a list
           echo "hash=$(sha256sum flake.lock $LOCKFILES | sha256sum | cut -c1-64)" >>"$GITHUB_OUTPUT"
 
+      # Only main saves: pull requests restore main's store (a branch's caches
+      # are invisible to other branches) instead of each storing their own.
       - uses: nix-community/cache-nix-action@7df957e333c1e5da7721f60227dbba6d06080569 # v7
         with:
           primary-key: nix-ci-v1-${{ runner.os }}-${{ steps.key.outputs.hash }}
           restore-prefixes-first-match: nix-ci-v1-${{ runner.os }}-
+          save: ${{ github.ref == 'refs/heads/main' }}
           # A restored older store plus this lockfile's builds would otherwise
           # grow with every lockfile change.
           gc-max-store-size-linux: 6G
@@ -87,7 +105,7 @@ jobs:
           for image in $IMAGES; do
             echo "::group::image: $image"
             start=$SECONDS
-            if nix build -L --no-link ".#$image"; then
+            if nix build -L --no-link ".#$image" ".#$image.copyTo"; then
               result="✅"
             else
               result="❌"
@@ -112,6 +130,63 @@ jobs:
           echo "| integration | outside the sandbox | $result | $((SECONDS - start)) s |" >>"$RUNNER_TEMP/summary"
           exit "$status"
 
+      # main pushes sha-<commit> (what a release promotes) and main; a pull
+      # request from this repository pushes pr-<n> and pr-<n>-<head>. Anything
+      # else (forks, schedules, other branches) pushes nothing.
+      - id: tags
+        if: inputs.push
+        env:
+          EVENT: ${{ github.event_name }}
+          PR: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+        run: |
+          tags=""
+          if [ "$EVENT" = push ] && [ "$GITHUB_REF" = refs/heads/main ]; then
+            tags="sha-$GITHUB_SHA main"
+          elif [ "$EVENT" = pull_request ] && [ "$HEAD_REPO" = "$GITHUB_REPOSITORY" ]; then
+            tags="pr-$PR pr-$PR-${HEAD_SHA:0:7}"
+          fi
+          echo "tags=$tags" >>"$GITHUB_OUTPUT"
+
+      # Each image's own copyTo (nix2container's skopeo) pushes only the layers
+      # the registry lacks, to the name the flake gives the image.
+      - name: Push
+        id: push
+        if: steps.tags.outputs.tags != ''
+        env:
+          IMAGES: ${{ inputs.images }}
+          TAGS: ${{ steps.tags.outputs.tags }}
+          GHCR_TOKEN: ${{ github.token }}
+        run: |
+          export REGISTRY_AUTH_FILE="$RUNNER_TEMP/registry-auth.json"
+          trap 'rm -f "$REGISTRY_AUTH_FILE"' EXIT
+          (umask 077 && printf '{"auths":{"ghcr.io":{"auth":"%s"}}}' \
+            "$(printf '%s:%s' "$GITHUB_ACTOR" "$GHCR_TOKEN" | base64 -w0)" >"$REGISTRY_AUTH_FILE")
+          refs='{}'
+          for image in $IMAGES; do
+            name=$(nix eval --raw ".#$image.imageName")
+            for tag in $TAGS; do
+              nix run ".#$image.copyTo" -- --digestfile "$RUNNER_TEMP/digest" "docker://$name:$tag"
+            done
+            ref="$name@$(cat "$RUNNER_TEMP/digest")"
+            refs=$(jq -c --arg i "$image" --arg r "$ref" '. + {($i): $r}' <<<"$refs")
+            echo "| $image | \`$ref\` | ${TAGS// /, } |" >>"$RUNNER_TEMP/pushed"
+          done
+          echo "images=$refs" >>"$GITHUB_OUTPUT"
+          jq -n --arg c "$GITHUB_SHA" --argjson i "$refs" '{commit: $c, images: $i}' >"$RUNNER_TEMP/image-digests.json"
+
+      # A release promotes the digests main's own run recorded here, never a
+      # registry tag: tags can be moved by any workflow that can write packages.
+      - if: steps.push.outcome == 'success' && github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: image-digests
+          path: ${{ runner.temp }}/image-digests.json
+          # The repository's artifact retention caps this (90 days by default,
+          # up to 400 in Settings → Actions → General).
+          retention-days: 400
+
       - name: Summary
         if: always()
         run: |
@@ -121,4 +196,10 @@ jobs:
             echo "| | | Result | Time |"
             echo "|---|---|---|---|"
             cat "$RUNNER_TEMP/summary" 2>/dev/null || true
+            if [ -s "$RUNNER_TEMP/pushed" ]; then
+              echo
+              echo "| Pushed | Reference | Tags |"
+              echo "|---|---|---|"
+              cat "$RUNNER_TEMP/pushed"
+            fi
           } >>"$GITHUB_STEP_SUMMARY"

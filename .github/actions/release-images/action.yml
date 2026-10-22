@@ -1,0 +1,63 @@
+name: release-images
+description: >
+  The images main built and deployed to test for the commit a release tag points
+  at, from the image-digests artifact of main's own CI run. Fails closed.
+inputs:
+  workflow:
+    description: The workflow file that calls nix-image.yml on main.
+    default: ci.yml
+  test-job:
+    description: The job that must have succeeded in that run (the deploy to test). Empty skips the check.
+    default: deploy-test
+  token:
+    description: A token that can read the repository and its Actions runs (actions read).
+    default: ${{ github.token }}
+outputs:
+  images:
+    description: 'JSON object, flake attribute to name@digest, as nix-image.yml pushed them.'
+    value: ${{ steps.resolve.outputs.images }}
+  commit:
+    description: The commit the tag points at.
+    value: ${{ steps.resolve.outputs.commit }}
+runs:
+  using: composite
+  steps:
+    - id: resolve
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        WORKFLOW: ${{ inputs.workflow }}
+        TEST_JOB: ${{ inputs.test-job }}
+      run: |
+        set -euo pipefail
+        sha=$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_REF" --jq .sha)
+        # "behind" or "identical": the tagged commit is on main.
+        status=$(gh api "repos/$GITHUB_REPOSITORY/compare/main...$sha" --jq .status)
+        case "$status" in
+          behind | identical) ;;
+          *) echo "::error::$GITHUB_REF_NAME points at $sha, which is not on main ($status); tag a commit main has built." >&2; exit 1 ;;
+        esac
+        # Only a push run on main counts: no pull request run can claim that
+        # event and branch, whatever its workflow file says.
+        runs=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow "$WORKFLOW" --commit "$sha" --event push --branch main \
+          --json databaseId,conclusion --jq '.[] | select(.conclusion == "success") | .databaseId')
+        for run in $runs; do
+          if [ -n "$TEST_JOB" ]; then
+            ok=$(gh run view "$run" --repo "$GITHUB_REPOSITORY" --json jobs |
+              jq --arg j "$TEST_JOB" '[.jobs[] | select(.name == $j and .conclusion == "success")] | length')
+            [ "$ok" -gt 0 ] || continue
+          fi
+          dir=$(mktemp -d)
+          gh run download "$run" --repo "$GITHUB_REPOSITORY" --name image-digests --dir "$dir" || {
+            echo "::error::run $run has no image-digests artifact (expired, or built before nix-image.yml recorded it)" >&2
+            exit 1
+          }
+          [ "$(jq -r .commit "$dir/image-digests.json")" = "$sha" ] || { echo "::error::run $run's image-digests is not for $sha" >&2; exit 1; }
+          images=$(jq -c .images "$dir/image-digests.json")
+          echo "run $run built and ${TEST_JOB:+deployed to test (${TEST_JOB}) }$sha: $images"
+          echo "images=$images" >>"$GITHUB_OUTPUT"
+          echo "commit=$sha" >>"$GITHUB_OUTPUT"
+          exit 0
+        done
+        echo "::error::no successful $WORKFLOW push run on main for $sha${TEST_JOB:+ whose $TEST_JOB job succeeded}; push it to main, wait for it, then tag." >&2
+        exit 1

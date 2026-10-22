@@ -1,0 +1,49 @@
+# Deletes a closed pull request's images: every package version whose tags are
+# all pr-<n> or pr-<n>-<head>. A version that also carries another tag stays:
+# the images are reproducible, so main's build of the merged code often has the
+# very digest the pull request pushed, and GHCR deletes versions, not tags.
+name: pr-images
+
+on:
+  workflow_call:
+    inputs:
+      images:
+        description: Flake attributes of the images nix-image.yml pushes, separated by spaces or newlines.
+        type: string
+        default: image
+
+jobs:
+  cleanup:
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: cachix/install-nix-action@448cde739abec1eaf0646249e3d25bb8d9bc7702 # v31.11.2
+      - env:
+          IMAGES: ${{ inputs.images }}
+          PR: ${{ github.event.pull_request.number }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for image in $IMAGES; do
+            name=$(nix eval --raw ".#$image.imageName")
+            [[ $name == ghcr.io/* ]] || { echo "::warning::$image is not on ghcr.io ($name); skipped"; continue; }
+            path=${name#ghcr.io/}
+            owner=${path%%/*}
+            package=${path#*/}
+            # Owned by a user or an organization: the API paths differ.
+            if gh api "orgs/$owner" --silent 2>/dev/null; then base="orgs/$owner"; else base="users/$owner"; fi
+            versions=$(gh api --paginate "$base/packages/container/${package//\//%2F}/versions" \
+              --jq ".[] | select(.metadata.container.tags | length > 0 and all(test(\"^pr-$PR(-|\$)\"))) | .id") || {
+              echo "::warning::could not list the versions of $name; skipped"
+              continue
+            }
+            for id in $versions; do
+              gh api -X DELETE "$base/packages/container/${package//\//%2F}/versions/$id" --silent
+              echo "deleted $name version $id (only tagged pr-$PR)"
+            done
+          done
