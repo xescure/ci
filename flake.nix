@@ -22,6 +22,7 @@
           name = "ghcr.io/xescure/ci-fixture";
           layers = [ (n2c.buildLayer { deps = [ pkgs.hello ]; }) ];
           config.Entrypoint = [ "${pkgs.hello}/bin/hello" ];
+          config.Env = [ "THROWAWAY=1" ];
         };
       };
 
