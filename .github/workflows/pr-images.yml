@@ -43,7 +43,12 @@ jobs:
               continue
             }
             for id in $versions; do
-              gh api -X DELETE "$base/packages/container/${package//\//%2F}/versions/$id" --silent
-              echo "deleted $name version $id (only tagged pr-$PR)"
+              # GHCR refuses to delete a package's last tagged version (a new
+              # package that only pull requests have pushed to): leave it.
+              if gh api -X DELETE "$base/packages/container/${package//\//%2F}/versions/$id" --silent; then
+                echo "deleted $name version $id (only tagged pr-$PR)"
+              else
+                echo "::warning::kept $name version $id: GHCR would not delete it (the package's last tagged version?)"
+              fi
             done
           done
