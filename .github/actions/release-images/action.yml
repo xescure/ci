@@ -1,10 +1,11 @@
 name: release-images
 description: >
-  The images main built and deployed to test for the commit a release tag points
-  at, from the image-digests artifact of main's own CI run. Fails closed.
+  The images the default branch built and deployed to test for the commit a
+  release tag points at, from the image-digests artifact of that branch's own CI
+  run. Fails closed.
 inputs:
   workflow:
-    description: The workflow file that calls nix-image.yml on main.
+    description: The workflow file that calls nix-image.yml on the default branch.
     default: ci.yml
   test-job:
     description: The job that must have succeeded in that run (the deploy to test). Empty skips the check.
@@ -31,15 +32,16 @@ runs:
       run: |
         set -euo pipefail
         sha=$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_REF" --jq .sha)
-        # "behind" or "identical": the tagged commit is on main.
-        status=$(gh api "repos/$GITHUB_REPOSITORY/compare/main...$sha" --jq .status)
+        branch=$(gh api "repos/$GITHUB_REPOSITORY" --jq .default_branch)
+        # "behind" or "identical": the tagged commit is on the default branch.
+        status=$(gh api "repos/$GITHUB_REPOSITORY/compare/$branch...$sha" --jq .status)
         case "$status" in
           behind | identical) ;;
-          *) echo "::error::$GITHUB_REF_NAME points at $sha, which is not on main ($status); tag a commit main has built." >&2; exit 1 ;;
+          *) echo "::error::$GITHUB_REF_NAME points at $sha, which is not on $branch ($status); tag a commit $branch has built." >&2; exit 1 ;;
         esac
-        # Only a push run on main counts: no pull request run can claim that
-        # event and branch, whatever its workflow file says.
-        runs=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow "$WORKFLOW" --commit "$sha" --event push --branch main \
+        # Only a push run on the default branch counts: no pull request run can
+        # claim that event and branch, whatever its workflow file says.
+        runs=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow "$WORKFLOW" --commit "$sha" --event push --branch "$branch" \
           --json databaseId,conclusion --jq '.[] | select(.conclusion == "success") | .databaseId')
         for run in $runs; do
           if [ -n "$TEST_JOB" ]; then
@@ -59,5 +61,5 @@ runs:
           echo "commit=$sha" >>"$GITHUB_OUTPUT"
           exit 0
         done
-        echo "::error::no successful $WORKFLOW push run on main for $sha${TEST_JOB:+ whose $TEST_JOB job succeeded}; push it to main, wait for it, then tag." >&2
+        echo "::error::no successful $WORKFLOW push run on $branch for $sha${TEST_JOB:+ whose $TEST_JOB job succeeded}; push it to $branch, wait for it, then tag." >&2
         exit 1
