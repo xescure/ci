@@ -1,0 +1,16 @@
+# Runs nix-image.yml on this repository's own flake, whose checks exercise each input.
+name: self-test
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  nix-image:
+    uses: ./.github/workflows/nix-image.yml
+    with:
+      checks: hello userns
+      images: fixture-image
+      integration: nix run .#hello
+      bwrap: true

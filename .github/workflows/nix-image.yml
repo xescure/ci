@@ -1,0 +1,124 @@
+# Builds a flake's checks and OCI images in one job, on one restored Nix store,
+# so the images reuse every derivation the checks built.
+name: nix-image
+
+on:
+  workflow_call:
+    inputs:
+      checks:
+        description: Names under checks.<system> to build, separated by spaces or newlines. Empty skips the checks.
+        type: string
+        default: ""
+      images:
+        description: Flake attributes of the OCI images to build, separated by spaces or newlines.
+        type: string
+        default: image
+      lockfiles:
+        description: Files that key the Nix cache besides flake.lock (package-lock.json, Cargo.lock…), separated by spaces or newlines.
+        type: string
+        default: ""
+      integration:
+        description: A shell command run after the images, outside the Nix sandbox, for tests that need the network. Empty skips it.
+        type: string
+        default: ""
+      bwrap:
+        description: Lift Ubuntu's AppArmor restriction on unprivileged user namespaces, for checks that run bwrap.
+        type: boolean
+        default: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # bwrap opens a user namespace inside the build sandbox, which Ubuntu's
+      # AppArmor policy refuses ("setting up uid map: Permission denied").
+      - if: inputs.bwrap
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
+      # Multi-user Nix; cache-nix-action restores into its root-owned store since v7.
+      - uses: cachix/install-nix-action@448cde739abec1eaf0646249e3d25bb8d9bc7702 # v31.11.2
+
+      - id: key
+        env:
+          LOCKFILES: ${{ inputs.lockfiles }}
+        run: |
+          # shellcheck disable=SC2086 # LOCKFILES is a list
+          echo "hash=$(sha256sum flake.lock $LOCKFILES | sha256sum | cut -c1-64)" >>"$GITHUB_OUTPUT"
+
+      - uses: nix-community/cache-nix-action@7df957e333c1e5da7721f60227dbba6d06080569 # v7
+        with:
+          primary-key: nix-ci-v1-${{ runner.os }}-${{ steps.key.outputs.hash }}
+          restore-prefixes-first-match: nix-ci-v1-${{ runner.os }}-
+          # A restored older store plus this lockfile's builds would otherwise
+          # grow with every lockfile change.
+          gc-max-store-size-linux: 6G
+
+      - name: Checks
+        if: inputs.checks != ''
+        env:
+          CHECKS: ${{ inputs.checks }}
+        run: |
+          system=$(nix config show system)
+          failed=0
+          for check in $CHECKS; do
+            echo "::group::check: $check"
+            start=$SECONDS
+            if nix build -L --no-link ".#checks.$system.$check"; then
+              result="✅"
+            else
+              result="❌"
+              failed=1
+            fi
+            echo "::endgroup::"
+            [ "$result" = "✅" ] || echo "::error title=check $check failed::nix build .#checks.$system.$check failed"
+            echo "| check | $check | $result | $((SECONDS - start)) s |" >>"$RUNNER_TEMP/summary"
+          done
+          exit "$failed"
+
+      - name: Images
+        env:
+          IMAGES: ${{ inputs.images }}
+        run: |
+          failed=0
+          for image in $IMAGES; do
+            echo "::group::image: $image"
+            start=$SECONDS
+            if nix build -L --no-link ".#$image"; then
+              result="✅"
+            else
+              result="❌"
+              failed=1
+            fi
+            echo "::endgroup::"
+            [ "$result" = "✅" ] || echo "::error title=image $image failed::nix build .#$image failed"
+            echo "| image | $image | $result | $((SECONDS - start)) s |" >>"$RUNNER_TEMP/summary"
+          done
+          exit "$failed"
+
+      - name: Integration
+        if: inputs.integration != ''
+        env:
+          INTEGRATION: ${{ inputs.integration }}
+        run: |
+          start=$SECONDS
+          status=0
+          bash -euo pipefail -c "$INTEGRATION" || status=$?
+          result="✅"
+          [ "$status" -eq 0 ] || { result="❌"; echo "::error title=integration failed::exit status $status"; }
+          echo "| integration | outside the sandbox | $result | $((SECONDS - start)) s |" >>"$RUNNER_TEMP/summary"
+          exit "$status"
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "### nix-image · ${GITHUB_REPOSITORY#*/}"
+            echo
+            echo "| | | Result | Time |"
+            echo "|---|---|---|---|"
+            cat "$RUNNER_TEMP/summary" 2>/dev/null || true
+          } >>"$GITHUB_STEP_SUMMARY"
