@@ -50,6 +50,8 @@ jobs:
 - **Nix:** `cachix/install-nix-action`, with `/nix` cached by
   `nix-community/cache-nix-action`, keyed on `flake.lock` plus `lockfiles`.
   Only main saves the cache; pull requests restore main's.
+- **Default branch:** "main" below means the repository's default branch (`main` or
+  `master`); the moving tag is called `main` either way.
 - **Push:** each image goes to the name its flake gives it (`imageName`), with
   its own `copyTo`, so only layers the registry lacks are uploaded.
 
