@@ -27,7 +27,7 @@ runs:
         trap 'rm -f "$REGISTRY_AUTH_FILE"' EXIT
         (umask 077 && printf '{"auths":{"ghcr.io":{"auth":"%s"}}}' \
           "$(printf '%s:%s' "$GITHUB_ACTOR" "$GHCR_TOKEN" | base64 -w0)" >"$REGISTRY_AUTH_FILE")
-        skopeo=$(nix build --no-link --print-out-paths --inputs-from . nixpkgs#skopeo)/bin/skopeo
+        skopeo=$(nix build --no-link --print-out-paths --inputs-from . 'nixpkgs#skopeo^out')/bin/skopeo
         for ref in $(jq -r '.[]' <<<"$IMAGES"); do
           for tag in $TAGS; do
             "$skopeo" copy --preserve-digests "docker://$ref" "docker://${ref%@*}:$tag"
