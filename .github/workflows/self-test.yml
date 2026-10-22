@@ -1,0 +1,69 @@
+# Runs this repository's workflows and actions on its own flake, whose checks
+# exercise each input, and pushes its fixture image to ghcr.io/xescure/ci-fixture.
+name: self-test
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, closed]
+  push:
+    branches: [main]
+  # Resolves the images main's last self-test run recorded, as a release would.
+  workflow_dispatch:
+
+jobs:
+  nix-image:
+    if: github.event_name != 'workflow_dispatch' && github.event.action != 'closed'
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/nix-image.yml
+    with:
+      checks: hello userns
+      images: fixture-image
+      integration: nix run .#hello
+      bwrap: true
+
+  tag-images:
+    needs: nix-image
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: cachix/install-nix-action@448cde739abec1eaf0646249e3d25bb8d9bc7702 # v31.11.2
+      - uses: ./.github/actions/tag-images
+        with:
+          images: ${{ needs.nix-image.outputs.images }}
+          tags: self-test
+
+  release-images:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - id: release
+        uses: ./.github/actions/release-images
+        with:
+          workflow: self-test.yml
+          test-job: tag-images
+      - run: echo "$IMAGES"
+        env:
+          IMAGES: ${{ steps.release.outputs.images }}
+
+  pr-images:
+    if: github.event.action == 'closed'
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/pr-images.yml
+    with:
+      images: fixture-image

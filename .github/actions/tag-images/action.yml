@@ -1,0 +1,36 @@
+name: tag-images
+description: >
+  Adds tags to images already in the registry, by digest: nothing is rebuilt or
+  re-uploaded but the manifest. Runs skopeo from the checked-out flake's nixpkgs,
+  so the job needs Nix and the repository checked out.
+inputs:
+  images:
+    description: 'JSON object, flake attribute to name@digest (release-images'' or nix-image.yml''s images output).'
+    required: true
+  tags:
+    description: The tags to add to each image, separated by spaces.
+    required: true
+  token:
+    description: A token that can write the images' packages.
+    default: ${{ github.token }}
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        IMAGES: ${{ inputs.images }}
+        TAGS: ${{ inputs.tags }}
+        GHCR_TOKEN: ${{ inputs.token }}
+      run: |
+        set -euo pipefail
+        export REGISTRY_AUTH_FILE="$RUNNER_TEMP/registry-auth.json"
+        trap 'rm -f "$REGISTRY_AUTH_FILE"' EXIT
+        (umask 077 && printf '{"auths":{"ghcr.io":{"auth":"%s"}}}' \
+          "$(printf '%s:%s' "$GITHUB_ACTOR" "$GHCR_TOKEN" | base64 -w0)" >"$REGISTRY_AUTH_FILE")
+        skopeo=$(nix build --no-link --print-out-paths --inputs-from . nixpkgs#skopeo)/bin/skopeo
+        for ref in $(jq -r '.[]' <<<"$IMAGES"); do
+          for tag in $TAGS; do
+            "$skopeo" copy --preserve-digests "docker://$ref" "docker://${ref%@*}:$tag"
+            echo "tagged $ref as $tag"
+          done
+        done
