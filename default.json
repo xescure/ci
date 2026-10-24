@@ -91,6 +91,13 @@
       "schedule": [
         "at any time"
       ]
+    },
+    {
+      "description": "typescript-eslint supports TypeScript up to 6.0.",
+      "matchPackageNames": [
+        "typescript"
+      ],
+      "allowedVersions": "<7"
     }
   ]
 }
