@@ -76,7 +76,7 @@ jobs:
 Deletes the package versions whose tags are all `pr-<n>…`. A version main also
 tagged stays (reproducible builds often give the merged code the same digest).
 
-## Releases: `release-images` and `tag-images`
+## Releases: `release-images`, `tag-images` and `prod-branch`
 
 A `v*` tag promotes what main built, never a rebuild and never a registry tag
 (any workflow that can write packages can move a tag):
@@ -90,7 +90,7 @@ jobs:
   deploy-prod:
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write   # prod-branch
       actions: read
       packages: write
     steps:
@@ -108,6 +108,35 @@ jobs:
         with:
           images: ${{ steps.release.outputs.images }}
           tags: ${{ github.ref_name }} latest
+      - uses: xescure/ci/.github/actions/prod-branch@<commit sha>
+        with:
+          commit: ${{ steps.release.outputs.commit }}
+```
+
+Every repository has the same three pointers: `main` (the default branch, and
+the image tag of its latest build), `v*` tags (releases), and **`prod`**, a
+branch at the latest release for tools that deploy a branch rather than a tag
+(Cloudflare Pages, Railway). Only `prod-branch` moves it, right after
+`latest`, so the two never disagree. Tagging an older commit moves both back:
+that is the rollback. Nothing else should push to `prod`; with GitHub Pro, a
+ruleset that restricts updates to `prod`, bypassed only by GitHub Actions,
+enforces it on private repositories too.
+
+A repository without images (`images: ""`) still gets an `image-digests`
+artifact from main's run, so the same gate works for it:
+
+```yaml
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - id: release
+        uses: xescure/ci/.github/actions/release-images@<commit sha>
+        with:
+          test-job: ""      # no deploy to test; main's CI passing is the gate
+      - uses: xescure/ci/.github/actions/prod-branch@<commit sha>
+        with:
+          commit: ${{ steps.release.outputs.commit }}
 ```
 
 ## Conventions

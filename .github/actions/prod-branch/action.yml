@@ -1,0 +1,45 @@
+name: prod-branch
+description: >
+  Points a branch (prod by default) at the commit a release tag points at, so
+  tools that follow a branch (Cloudflare Pages, Railway) deploy the latest
+  release. Moves it backwards too: tagging an older commit rolls it back. Runs
+  last in a release job, once prod runs the release; needs contents write.
+inputs:
+  branch:
+    description: The branch to move.
+    default: prod
+  commit:
+    description: The commit to point it at (release-images' commit output). Empty means the one the triggering tag points at.
+    default: ""
+  token:
+    description: A token that can write the repository's contents.
+    default: ${{ github.token }}
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        BRANCH: ${{ inputs.branch }}
+        COMMIT: ${{ inputs.commit }}
+      run: |
+        set -euo pipefail
+        sha=$(gh api "repos/$GITHUB_REPOSITORY/commits/${COMMIT:-$GITHUB_REF}" --jq .sha)
+        default=$(gh api "repos/$GITHUB_REPOSITORY" --jq .default_branch)
+        # Whatever the caller checked already: the branch deploys, so it only
+        # ever points at a commit the default branch has.
+        status=$(gh api "repos/$GITHUB_REPOSITORY/compare/$default...$sha" --jq .status)
+        case "$status" in
+          behind | identical) ;;
+          *) echo "::error::$sha is not on $default ($status); $BRANCH stays where it is." >&2; exit 1 ;;
+        esac
+        # Not a fast-forward on purpose: the branch is a pointer to the latest
+        # release, and the tags are the history.
+        if old=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$BRANCH" --jq .object.sha 2>/dev/null); then
+          gh api -X PATCH "repos/$GITHUB_REPOSITORY/git/refs/heads/$BRANCH" -f sha="$sha" -F force=true >/dev/null
+        else
+          old=none
+          gh api "repos/$GITHUB_REPOSITORY/git/refs" -f ref="refs/heads/$BRANCH" -f sha="$sha" >/dev/null
+        fi
+        echo "$BRANCH: $old -> $sha"
+        echo "**$BRANCH** now points at \`$sha\` (was \`$old\`)." >>"$GITHUB_STEP_SUMMARY"
