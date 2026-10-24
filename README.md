@@ -78,8 +78,11 @@ tagged stays (reproducible builds often give the merged code the same digest).
 
 ## Releases: `release-images`, `tag-images` and `prod-branch`
 
-A `v*` tag promotes what main built, never a rebuild and never a registry tag
-(any workflow that can write packages can move a tag):
+A `v*` tag publishes what main built, never a rebuild and never a registry tag
+(any workflow that can write packages can move a tag). The release is defined
+by the tag, not by any one deployment: once it passes the gate, `v<version>`,
+`latest` and `prod` move for everyone who pulls the images or follows the
+branch, and this project's own prod deploy is one more consumer after that.
 
 ```yaml
 on:
@@ -87,7 +90,7 @@ on:
     tags: ["v*"]
 
 jobs:
-  deploy-prod:
+  release:
     runs-on: ubuntu-latest
     permissions:
       contents: write   # prod-branch
@@ -98,12 +101,11 @@ jobs:
         with:
           persist-credentials: false
       - uses: cachix/install-nix-action@<sha>
-      # The tag must be on main, and main's CI run for it must have succeeded
-      # and deployed to test; the digests come from that run's artifact.
+      # The gate: the tag must be on main, and main's CI run for it must have
+      # succeeded and deployed to test; the digests come from that run's artifact.
       - id: release
         uses: xescure/ci/.github/actions/release-images@<commit sha>
-      - run: deploy prod "${{ fromJSON(steps.release.outputs.images)['image'] }}"
-      # Once prod runs it.
+      # Publish: from here on the release exists for every consumer.
       - uses: xescure/ci/.github/actions/tag-images@<commit sha>
         with:
           images: ${{ steps.release.outputs.images }}
@@ -111,17 +113,23 @@ jobs:
       - uses: xescure/ci/.github/actions/prod-branch@<commit sha>
         with:
           commit: ${{ steps.release.outputs.commit }}
+      # This project's own prod, if it deploys explicitly (tools that follow
+      # latest or prod need no step). A failure here leaves only it behind.
+      - run: deploy prod "${{ fromJSON(steps.release.outputs.images)['image'] }}"
 ```
 
 Every repository has the same three pointers: `main` (the default branch, and
 the image tag of its latest build), `v*` tags (releases), and **`prod`**, a
 branch at the latest release for tools that deploy a branch rather than a tag
 (Cloudflare Pages, Railway). Only `prod-branch` moves it, right after
-`latest`, so the two never disagree. Re-running an older release's run (Actions,
-"Re-run all jobs") deploys its digests again and moves both back: that is the
-rollback, as long as main's `image-digests` artifact for it has not expired. Nothing else should push to `prod`; with GitHub Pro, a
-ruleset that restricts updates to `prod`, bypassed only by GitHub Actions,
-enforces it on private repositories too.
+`tag-images` moves `latest`, so the two never disagree. Nothing else should
+push to `prod`; with GitHub Pro, a ruleset that restricts updates to `prod`,
+bypassed only by GitHub Actions, enforces it on private repositories too.
+
+**Rollback:** re-run an older release's run (Actions, "Re-run all jobs"). It
+moves `latest` and `prod` back to that release's digests and commit for every
+consumer, then redeploys. It works as long as main's `image-digests` artifact
+for that commit has not expired.
 
 A repository without images (`images: ""`) still gets an `image-digests`
 artifact from main's run, so the same gate works for it:
@@ -163,6 +171,6 @@ must be installed on this repository too, to read it):
 - npm and crates releases wait 3 days before they are proposed; security fixes
   come at any time.
 - Green minor, patch, digest and lock file updates merge themselves (main
-  deploys to test; prod still needs a `v*` tag). Majors, and anything below
+  deploys to test; a release still needs a `v*` tag). Majors, and anything below
   1.0, wait for review.
 - The `xescure/ci` pin follows main by digest: its own PR as soon as main moves.

@@ -3,8 +3,8 @@ description: >
   Points a branch (prod by default) at the commit a release tag points at, so
   tools that follow a branch (Cloudflare Pages, Railway) deploy the latest
   release. Moves it backwards too: re-running an older release's run rolls it
-  back. Runs last in a release job, after the deploy (where a tool deploys
-  from the branch, moving it is the deploy). Needs contents write.
+  back. Runs right after tag-images moves latest, before the project's own
+  deploy: the release is the tag, not any one deployment. Needs contents write.
 inputs:
   branch:
     description: The branch to move.
