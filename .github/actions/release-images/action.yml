@@ -1,24 +1,18 @@
 name: release-images
-description: >
-  The images the default branch built and deployed to test for the commit a
-  release tag points at, from the image-digests artifact of that branch's own CI
-  run. Fails closed.
+description: The digests the default branch's CI run recorded for the tagged commit.
 inputs:
   workflow:
-    description: The workflow file that calls nix-image.yml on the default branch.
     default: ci.yml
   test-job:
-    description: The job that must have succeeded in that run (the deploy to test). Empty skips the check.
+    description: A job that must have succeeded in that run. Empty skips the check.
     default: deploy-test
   token:
-    description: A token that can read the repository and its Actions runs (actions read).
     default: ${{ github.token }}
 outputs:
   images:
-    description: 'JSON object, flake attribute to name@digest, as nix-image.yml pushed them.'
+    description: 'JSON object, flake attribute to name@digest.'
     value: ${{ steps.resolve.outputs.images }}
   commit:
-    description: The commit the tag points at.
     value: ${{ steps.resolve.outputs.commit }}
 runs:
   using: composite
@@ -33,14 +27,12 @@ runs:
         set -euo pipefail
         sha=$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_REF" --jq .sha)
         branch=$(gh api "repos/$GITHUB_REPOSITORY" --jq .default_branch)
-        # "behind" or "identical": the tagged commit is on the default branch.
         status=$(gh api "repos/$GITHUB_REPOSITORY/compare/$branch...$sha" --jq .status)
         case "$status" in
           behind | identical) ;;
           *) echo "::error::$GITHUB_REF_NAME points at $sha, which is not on $branch ($status); tag a commit $branch has built." >&2; exit 1 ;;
         esac
-        # Only a push run on the default branch counts: no pull request run can
-        # claim that event and branch, whatever its workflow file says.
+        # A pull request can change the workflow file, but not its run's event or branch.
         runs=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow "$WORKFLOW" --commit "$sha" --event push --branch "$branch" \
           --json databaseId,conclusion --jq '.[] | select(.conclusion == "success") | .databaseId')
         for run in $runs; do

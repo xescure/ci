@@ -1,14 +1,12 @@
-# Deletes a closed pull request's images: every package version whose tags are
-# all pr-<n> or pr-<n>-<head>. A version that also carries another tag stays:
-# the images are reproducible, so main's build of the merged code often has the
-# very digest the pull request pushed, and GHCR deletes versions, not tags.
+# Deletes versions tagged only pr-<n>…; reproducible builds often give main
+# the same digest, and GHCR deletes versions, not tags.
 name: pr-images
 
 on:
   workflow_call:
     inputs:
       images:
-        description: Flake attributes of the images nix-image.yml pushes, separated by spaces or newlines.
+        description: Flake attributes of the images nix-image.yml pushes.
         type: string
         default: image
 
@@ -35,7 +33,6 @@ jobs:
             path=${name#ghcr.io/}
             owner=${path%%/*}
             package=${path#*/}
-            # Owned by a user or an organization: the API paths differ.
             if gh api "orgs/$owner" --silent 2>/dev/null; then base="orgs/$owner"; else base="users/$owner"; fi
             versions=$(gh api --paginate "$base/packages/container/${package//\//%2F}/versions" \
               --jq ".[] | select(.metadata.container.tags | length > 0 and all(test(\"^pr-$PR(-|\$)\"))) | .id") || {
@@ -43,8 +40,7 @@ jobs:
               continue
             }
             for id in $versions; do
-              # GHCR refuses to delete a package's last tagged version (a new
-              # package that only pull requests have pushed to): leave it.
+              # GHCR refuses to delete a package's last tagged version.
               if gh api -X DELETE "$base/packages/container/${package//\//%2F}/versions/$id" --silent; then
                 echo "deleted $name version $id (only tagged pr-$PR)"
               else

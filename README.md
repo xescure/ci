@@ -1,12 +1,8 @@
 # xescure/ci
 
-Shared CI for xescure's Nix projects. Callers pin it by commit.
+Pin by commit.
 
-## `nix-image.yml`: build, check and push
-
-Builds a flake's checks and nix2container images in **one job**, on one
-restored Nix store, so the images reuse every derivation the checks built.
-Then it pushes the images.
+## `nix-image.yml`
 
 ```yaml
 on:
@@ -15,10 +11,9 @@ on:
   push:
     branches: [main]
   schedule:
-    - cron: "17 4 * * 1"   # weekly: keeps main's Nix cache from expiring (7 days unused)
+    - cron: "17 4 * * 1"   # the Nix cache expires after 7 days unused
 
-# A merged pull request's "closed" run has the base branch as its ref: group
-# pull request runs by number, or it cancels main's push run.
+# A merged pull request's closed run has the base branch as its ref.
 concurrency:
   group: ci-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -29,60 +24,33 @@ jobs:
     permissions:
       contents: read
       packages: write
-    uses: xescure/ci/.github/workflows/nix-image.yml@<commit sha>
+    uses: xescure/ci/.github/workflows/nix-image.yml@<sha>
     with:
-      checks: lint typecheck        # names under checks.<system>; empty skips
-      images: image                 # flake attributes of nix2container images
-      lockfiles: package-lock.json  # keys the Nix cache, besides flake.lock
-      integration: ""               # a command run outside the sandbox (network tests)
-      bwrap: false                  # lift Ubuntu's userns restriction for bwrap checks
+      checks: lint typecheck
+      images: image
+      lockfiles: package-lock.json
+      integration: ""
+      bwrap: false
 
   pr-images:
     if: github.event.action == 'closed'
     permissions:
       contents: read
       packages: write
-    uses: xescure/ci/.github/workflows/pr-images.yml@<commit sha>
+    uses: xescure/ci/.github/workflows/pr-images.yml@<sha>
     with:
       images: image
 ```
 
-- **Nix:** `cachix/install-nix-action`, with `/nix` cached by
-  `nix-community/cache-nix-action`, keyed on `flake.lock` plus `lockfiles`.
-  Only main saves the cache; pull requests restore main's.
-- **Default branch:** "main" below means the repository's default branch (`main` or
-  `master`); the moving tag is called `main` either way.
-- **Push:** each image goes to the name its flake gives it (`imageName`), with
-  its own `copyTo`, so only layers the registry lacks are uploaded.
+| Event | Tags |
+|---|---|
+| push to the default branch | `sha-<commit>`, `main` |
+| pull request from this repository | `pr-<n>`, `pr-<n>-<head sha7>` |
+| `v*` release | `v<version>`, `latest`, and the `prod` branch |
 
-  | Event | Tags |
-  |---|---|
-  | push to main | `sha-<commit>`, `main` |
-  | pull request from this repository | `pr-<n>`, `pr-<n>-<head sha7>` |
-  | release (see below) | `v<version>`, `latest` |
-  | anything else (forks, schedule) | none |
+Set artifact retention to 400 days so old commits stay releasable.
 
-- **Output:** `images`, a JSON object from flake attribute to `name@digest`,
-  e.g. `fromJSON(needs.build.outputs.images)['image']` for a deploy job. On
-  main the same object is saved as the run's `image-digests` artifact
-  (raise the repository's artifact retention to 400 days so old commits stay
-  releasable).
-- **Token:** the checkout keeps no credentials, and only the push step sees
-  the token that can write packages.
-- The run page summarises each check, image, integration step and push.
-
-## `pr-images.yml`: clean up a closed pull request's images
-
-Deletes the package versions whose tags are all `pr-<n>…`. A version main also
-tagged stays (reproducible builds often give the merged code the same digest).
-
-## Releases: `release-images`, `tag-images` and `prod-branch`
-
-A `v*` tag publishes what main built, never a rebuild and never a registry tag
-(any workflow that can write packages can move a tag). The release is defined
-by the tag, not by any one deployment: once it passes the gate, `v<version>`,
-`latest` and `prod` move for everyone who pulls the images or follows the
-branch, and this project's own prod deploy is one more consumer after that.
+## Releases
 
 ```yaml
 on:
@@ -93,7 +61,7 @@ jobs:
   release:
     runs-on: ubuntu-latest
     permissions:
-      contents: write   # prod-branch
+      contents: write
       actions: read
       packages: write
     steps:
@@ -101,76 +69,26 @@ jobs:
         with:
           persist-credentials: false
       - uses: cachix/install-nix-action@<sha>
-      # The gate: the tag must be on main, and main's CI run for it must have
-      # succeeded and deployed to test; the digests come from that run's artifact.
       - id: release
-        uses: xescure/ci/.github/actions/release-images@<commit sha>
-      # Publish: from here on the release exists for every consumer.
-      - uses: xescure/ci/.github/actions/tag-images@<commit sha>
+        uses: xescure/ci/.github/actions/release-images@<sha>
+        with:
+          test-job: deploy-test   # "" when there is no deploy to test
+      - uses: xescure/ci/.github/actions/tag-images@<sha>
         with:
           images: ${{ steps.release.outputs.images }}
           tags: ${{ github.ref_name }} latest
-      - uses: xescure/ci/.github/actions/prod-branch@<commit sha>
+      - uses: xescure/ci/.github/actions/prod-branch@<sha>
         with:
           commit: ${{ steps.release.outputs.commit }}
-      # This project's own prod, if it deploys explicitly (tools that follow
-      # latest or prod need no step). A failure here leaves only it behind.
       - run: deploy prod "${{ fromJSON(steps.release.outputs.images)['image'] }}"
 ```
 
-Every repository has the same three pointers: `main` (the default branch, and
-the image tag of its latest build), `v*` tags (releases), and **`prod`**, a
-branch at the latest release for tools that deploy a branch rather than a tag
-(Cloudflare Pages, Railway). Only `prod-branch` moves it, right after
-`tag-images` moves `latest`, so the two never disagree. Nothing else should
-push to `prod`; with GitHub Pro, a ruleset that restricts updates to `prod`,
-bypassed only by GitHub Actions, enforces it on private repositories too.
+The release publishes before the project's own deploy, which is one consumer
+among others. Rolling back means re-running an older release's run. Without images, keep
+`release-images` and `prod-branch`.
 
-**Rollback:** re-run an older release's run (Actions, "Re-run all jobs"). It
-moves `latest` and `prod` back to that release's digests and commit for every
-consumer, then redeploys. It works as long as main's `image-digests` artifact
-for that commit has not expired.
-
-A repository without images (`images: ""`) still gets an `image-digests`
-artifact from main's run, so the same gate works for it:
-
-```yaml
-    permissions:
-      contents: write
-      actions: read
-    steps:
-      - id: release
-        uses: xescure/ci/.github/actions/release-images@<commit sha>
-        with:
-          test-job: ""      # no deploy to test; main's CI passing is the gate
-      - uses: xescure/ci/.github/actions/prod-branch@<commit sha>
-        with:
-          commit: ${{ steps.release.outputs.commit }}
-```
-
-## Conventions
-
-Project-specific checks belong in the project's flake as `checks.<system>.<name>`.
-An input is added here only when a second project needs the same runner-level
-quirk. A project needing more than two such quirks writes its own job.
-
-This repository's flake is the self-test (`self-test.yml`): its checks exercise
-the inputs, and its fixture image is pushed to `ghcr.io/xescure/ci-fixture`.
-
-## Renovate preset (`default.json`)
-
-Projects extend it with a `renovate.json` of one line (the hosted Renovate app
-must be installed on this repository too, to read it):
+## Renovate
 
 ```json
 { "extends": ["local>xescure/ci"] }
 ```
-
-- Weekly (Monday before 6am UTC), one grouped PR per ecosystem: Rust, npm,
-  GitHub Actions, Nix flake inputs, plus lock file maintenance.
-- npm and crates releases wait 3 days before they are proposed; security fixes
-  come at any time.
-- Green minor, patch, digest and lock file updates merge themselves (main
-  deploys to test; a release still needs a `v*` tag). Majors, and anything below
-  1.0, wait for review.
-- The `xescure/ci` pin follows main by digest: its own PR as soon as main moves.

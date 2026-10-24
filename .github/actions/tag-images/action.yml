@@ -1,17 +1,12 @@
 name: tag-images
-description: >
-  Adds tags to images already in the registry, by digest: nothing is rebuilt or
-  re-uploaded but the manifest. Runs skopeo from the checked-out flake's nixpkgs,
-  so the job needs Nix and the repository checked out.
+description: Tags images in the registry by digest. Needs Nix and the repository checked out.
 inputs:
   images:
-    description: 'JSON object, flake attribute to name@digest (release-images'' or nix-image.yml''s images output).'
+    description: 'JSON object, flake attribute to name@digest.'
     required: true
   tags:
-    description: The tags to add to each image, separated by spaces.
     required: true
   token:
-    description: A token that can write the images' packages.
     default: ${{ github.token }}
 runs:
   using: composite
