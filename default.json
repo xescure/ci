@@ -80,6 +80,17 @@
         "at any time"
       ],
       "automerge": true
+    },
+    {
+      "matchPackageNames": [
+        "@keetanetwork/**"
+      ],
+      "groupName": "Keeta",
+      "rangeStrategy": "pin",
+      "minimumReleaseAge": null,
+      "schedule": [
+        "at any time"
+      ]
     }
   ]
 }
