@@ -117,8 +117,9 @@ Every repository has the same three pointers: `main` (the default branch, and
 the image tag of its latest build), `v*` tags (releases), and **`prod`**, a
 branch at the latest release for tools that deploy a branch rather than a tag
 (Cloudflare Pages, Railway). Only `prod-branch` moves it, right after
-`latest`, so the two never disagree. Tagging an older commit moves both back:
-that is the rollback. Nothing else should push to `prod`; with GitHub Pro, a
+`latest`, so the two never disagree. Re-running an older release's run (Actions,
+"Re-run all jobs") deploys its digests again and moves both back: that is the
+rollback, as long as main's `image-digests` artifact for it has not expired. Nothing else should push to `prod`; with GitHub Pro, a
 ruleset that restricts updates to `prod`, bypassed only by GitHub Actions,
 enforces it on private repositories too.
 
