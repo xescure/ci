@@ -91,6 +91,14 @@
       "schedule": [
         "at any time"
       ]
+    },
+    {
+      "description": "typescript-eslint supports TypeScript up to 6.0; repos already on 7 update freely.",
+      "matchPackageNames": [
+        "typescript"
+      ],
+      "matchCurrentVersion": "<7",
+      "allowedVersions": "<7"
     }
   ]
 }
