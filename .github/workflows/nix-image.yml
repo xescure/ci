@@ -53,20 +53,25 @@ jobs:
         with:
           persist-credentials: false
 
-      # The key is deleted before any later step runs, the integration command included.
+      # The key is deleted before any later step runs, the integration command
+      # included. Nix fetches a submodule again by its URL, so each URL then
+      # points at the copy checked out here.
       - if: inputs.submodules
         env:
           KEY: ${{ secrets.submodule-key }}
         run: |
           if [ -z "$KEY" ]; then
             git submodule update --init --recursive
-            exit 0
+          else
+            key="$RUNNER_TEMP/submodule-key"
+            trap 'rm -f "$key"' EXIT
+            (umask 077 && printf '%s\n' "$KEY" >"$key")
+            GIT_SSH_COMMAND="ssh -i $key -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new" \
+              git -c url.git@github.com:.insteadOf=https://github.com/ submodule update --init --recursive
           fi
-          key="$RUNNER_TEMP/submodule-key"
-          trap 'rm -f "$key"' EXIT
-          (umask 077 && printf '%s\n' "$KEY" >"$key")
-          GIT_SSH_COMMAND="ssh -i $key -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new" \
-            git -c url.git@github.com:.insteadOf=https://github.com/ submodule update --init --recursive
+          # shellcheck disable=SC2016
+          git submodule foreach --quiet --recursive \
+            'git config --global "url.$(git rev-parse --absolute-git-dir).insteadOf" "$(git remote get-url origin)"'
 
       # Ubuntu's AppArmor policy: "setting up uid map: Permission denied".
       - if: inputs.bwrap
