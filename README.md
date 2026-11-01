@@ -50,6 +50,15 @@ jobs:
 
 Set artifact retention to 400 days so old commits stay releasable.
 
+`submodules: true` checks out the submodules. A private one needs a read-only deploy key on it, passed as a secret:
+
+```yaml
+    with:
+      submodules: true
+    secrets:
+      submodule-key: ${{ secrets.SUBMODULE_DEPLOY_KEY }}
+```
+
 ## Releases
 
 ```yaml
