@@ -66,8 +66,12 @@ jobs:
             key="$RUNNER_TEMP/submodule-key"
             trap 'rm -f "$key"' EXIT
             (umask 077 && printf '%s\n' "$KEY" >"$key")
-            GIT_SSH_COMMAND="ssh -i $key -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new" \
-              git -c url.git@github.com:.insteadOf=https://github.com/ submodule update --init --recursive
+            # A deploy key reads one repository, so only a submodule https cannot fetch uses it.
+            git config --file .gitmodules --get-regexp '\.path$' | cut -d' ' -f2- | while IFS= read -r path; do
+              GIT_TERMINAL_PROMPT=0 git submodule update --init --recursive -- "$path" 2>/dev/null ||
+                GIT_SSH_COMMAND="ssh -i $key -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new" \
+                  git -c url.git@github.com:.insteadOf=https://github.com/ submodule update --init --recursive -- "$path"
+            done
           fi
           # shellcheck disable=SC2016
           git submodule foreach --quiet --recursive \
