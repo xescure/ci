@@ -92,6 +92,9 @@ jobs:
       - run: deploy prod "${{ fromJSON(steps.release.outputs.images)['image'] }}"
 ```
 
+A tag pushed right after its commit waits for that commit's CI run (up to
+`wait-minutes`, 60 by default) instead of failing.
+
 The release publishes before the project's own deploy, which is one consumer
 among others. Rolling back means re-running an older release's run. Without images, keep
 `release-images` and `prod-branch`.
