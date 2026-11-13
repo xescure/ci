@@ -24,6 +24,7 @@ jobs:
     permissions:
       contents: read
       packages: write
+      actions: write
     uses: xescure/ci/.github/workflows/nix-image.yml@<sha>
     with:
       checks: lint typecheck
@@ -47,6 +48,11 @@ jobs:
 | push to the default branch | `sha-<commit>`, `main` |
 | pull request from this repository | `pr-<n>`, `pr-<n>-<head sha7>` |
 | `v*` release | `v<version>`, `latest`, and the `prod` branch |
+
+The Nix cache is saved from the default branch only, on every run, replacing
+that branch's older caches (hence `actions: write`). Checks and images are GC
+roots and keep what built them, so a run whose lockfiles did not change
+restores its builds instead of redoing them.
 
 Set artifact retention to 400 days so old commits stay releasable.
 
