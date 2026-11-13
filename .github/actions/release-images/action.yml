@@ -6,6 +6,9 @@ inputs:
   test-job:
     description: A job that must have succeeded in that run. Empty skips the check.
     default: deploy-test
+  wait-minutes:
+    description: How long to wait for that run while it is still going.
+    default: "60"
   token:
     default: ${{ github.token }}
 outputs:
@@ -23,6 +26,7 @@ runs:
         GH_TOKEN: ${{ inputs.token }}
         WORKFLOW: ${{ inputs.workflow }}
         TEST_JOB: ${{ inputs.test-job }}
+        WAIT_MINUTES: ${{ inputs.wait-minutes }}
       run: |
         set -euo pipefail
         sha=$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_REF" --jq .sha)
@@ -33,13 +37,17 @@ runs:
           *) echo "::error::$GITHUB_REF_NAME points at $sha, which is not on $branch ($status); tag a commit $branch has built." >&2; exit 1 ;;
         esac
         # A pull request can change the workflow file, but not its run's event or branch.
-        runs=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow "$WORKFLOW" --commit "$sha" --event push --branch "$branch" \
-          --json databaseId,conclusion --jq '.[] | select(.conclusion == "success") | .databaseId')
-        for run in $runs; do
+        list_runs() {
+          gh run list --repo "$GITHUB_REPOSITORY" --workflow "$WORKFLOW" --commit "$sha" --event push --branch "$branch" \
+            --json databaseId,status,conclusion
+        }
+        # Exits with the run's images if it built and (with TEST_JOB) deployed $sha to test.
+        use_run() {
+          local run=$1 ok dir images
           if [ -n "$TEST_JOB" ]; then
             ok=$(gh run view "$run" --repo "$GITHUB_REPOSITORY" --json jobs |
               jq --arg j "$TEST_JOB" '[.jobs[] | select(.name == $j and .conclusion == "success")] | length')
-            [ "$ok" -gt 0 ] || continue
+            [ "$ok" -gt 0 ] || return 0
           fi
           dir=$(mktemp -d)
           gh run download "$run" --repo "$GITHUB_REPOSITORY" --name image-digests --dir "$dir" || {
@@ -52,6 +60,24 @@ runs:
           echo "images=$images" >>"$GITHUB_OUTPUT"
           echo "commit=$sha" >>"$GITHUB_OUTPUT"
           exit 0
+        }
+        # A tag pushed right after its commit finds that commit's run still going: wait for it.
+        deadline=$(($(date +%s) + WAIT_MINUTES * 60))
+        while :; do
+          runs=$(list_runs)
+          for run in $(jq -r '.[] | select(.conclusion == "success") | .databaseId' <<<"$runs"); do
+            use_run "$run"
+          done
+          going=$(jq -r '[.[] | select(.status != "completed")][0].databaseId // empty' <<<"$runs")
+          [ -n "$going" ] || break
+          left=$((deadline - $(date +%s)))
+          if [ "$left" -le 0 ]; then
+            echo "::error::$WORKFLOW run $going for $sha was still going after $WAIT_MINUTES minutes; re-run this release once it succeeds." >&2
+            exit 1
+          fi
+          echo "waiting for $WORKFLOW run $going on $branch for $sha (up to $((left / 60)) more minutes)"
+          timeout "$left" gh run watch "$going" --repo "$GITHUB_REPOSITORY" --interval 30 >/dev/null || true
         done
-        echo "::error::no successful $WORKFLOW push run on $branch for $sha${TEST_JOB:+ whose $TEST_JOB job succeeded}; push it to $branch, wait for it, then tag." >&2
+        ended=$(jq -r '[.[] | "\(.databaseId): \(.conclusion)"] | join(", ")' <<<"$runs")
+        echo "::error::no successful $WORKFLOW push run on $branch for $sha${TEST_JOB:+ whose $TEST_JOB job succeeded}${ended:+ (runs: $ended)}; push it to $branch, wait for it, then tag." >&2
         exit 1
